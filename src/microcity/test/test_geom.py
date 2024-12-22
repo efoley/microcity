@@ -4,7 +4,7 @@ import pytest
 import math
 import numpy as np
 
-from microcity.geom import curvature_radius, segment_tangents
+from microcity.geom import curvature_radius, resample_polyline, segment_tangents
 
 
 def test_curvature_radius_straight_line():
@@ -157,3 +157,105 @@ def test_segment_tangents_random_polyline():
     tangents = segment_tangents(random_points)
     assert tangents.shape == (4, 2), "Should have N-1 tangents for N points."
     assert not jnp.isnan(tangents).any(), "No NaNs expected in computed tangents."
+
+
+def test_resample_polyline_straight_line():
+    """
+    Test that a straight line is resampled correctly with uniform spacing <= max_step.
+    The original line is 4 units long, so with max_step=1.0, we expect 4 intervals of length=1.
+    """
+    points = jnp.array([[0.0, 0.0], [4.0, 0.0]])
+    max_step = 1.0
+    new_points = resample_polyline(points, max_step)
+
+    # The line is 4 units long. We expect intervals=4, so 5 points total.
+    # Positions: 0, 1, 2, 3, 4 along the x-axis.
+    assert new_points.shape[0] == 5
+    np.testing.assert_allclose(new_points[:, 0], [0, 1, 2, 3, 4], rtol=1e-6, atol=1e-6)
+    np.testing.assert_allclose(new_points[:, 1], [0, 0, 0, 0, 0], rtol=1e-6, atol=1e-6)
+
+
+def test_resample_polyline_diagonal_line():
+    """
+    Test that a diagonal line of length sqrt(2)*3 = ~4.2426 is resampled with uniform spacing <= max_step.
+    The original points are (0,0), (3,3).
+    """
+    points = jnp.array([[0.0, 0.0], [3.0, 3.0]])
+    max_step = 1.0
+    new_points = resample_polyline(points, max_step)
+
+    # The total length is 3*sqrt(2) ~ 4.2426.
+    # For max_step=1, we'd expect 5 intervals if spacing is ~0.8485 (since 4.2426 / 0.8485 ~ 5).
+    # So total points = intervals + 1 = 6 (approx).
+    # We won't test the exact count; let's just check the spacing is uniform and <= 1.
+
+    distances = jnp.sqrt(jnp.sum((new_points[1:] - new_points[:-1]) ** 2, axis=1))
+    # All distances should be nearly the same and <= 1.0
+    assert (distances <= max_step + 1e-6).all(), "Spacing should be <= max_step"
+    # Check uniformity by ensuring the std of distances is very small
+    assert np.std(np.array(distances)) < 1e-6, "Distances should be uniform."
+
+
+def test_resample_polyline_large_max_step():
+    """
+    If max_step is larger than the total length, we should only get start and end points.
+    """
+    points = jnp.array(
+        [
+            [0.0, 0.0],
+            [3.0, 4.0],  # length=5
+        ]
+    )
+    max_step = 10.0  # larger than the entire length
+    new_points = resample_polyline(points, max_step)
+    # Expect just the start and end
+    assert new_points.shape[0] == 2
+    np.testing.assert_allclose(new_points, points, rtol=1e-6, atol=1e-6)
+
+
+def test_resample_polyline_repeated_points():
+    """
+    If the polyline has repeated points (zero-length segments),
+    ensure it doesn't cause errors or incorrect spacing in the result.
+    """
+    points = jnp.array(
+        [
+            [0.0, 0.0],
+            [1.0, 1.0],
+            [1.0, 1.0],  # repeated
+            [2.0, 2.0],
+        ]
+    )
+    max_step = 0.5
+    new_points = resample_polyline(points, max_step)
+
+    # The total length ignoring repeated points = distance from (0,0)->(1,1)->(2,2) = sqrt(2)+sqrt(2) = 2*1.4142=2.8284
+    # max_step=0.5 => intervals ~ ceil(2.8284 / 0.5)= ceil(5.6568)=6, spacing=2.8284/6 ~0.4714, expect ~7 points
+    assert new_points.shape[0] >= 5, "Should have at least 5 points (likely more)."
+    distances = jnp.sqrt(jnp.sum((new_points[1:] - new_points[:-1]) ** 2, axis=1))
+    # Check spacing is uniform and <= 0.5
+    assert (distances <= max_step + 1e-6).all(), "Spacing should be <= max_step"
+    assert np.std(np.array(distances)) < 1e-5, "Distances should be nearly uniform."
+
+
+def test_resample_polyline_random():
+    """
+    Quick sanity check for random input.
+    Ensures no NaNs and that the output spacing is uniform and <= max_step.
+    """
+    key = jax.random.PRNGKey(42)
+    # Generate random points in [0, 5)
+    random_points = 5.0 * jax.random.uniform(key, shape=(5, 2))
+    max_step = 1.0
+
+    new_points = resample_polyline(random_points, max_step)
+    assert new_points.shape[0] >= 2, "Should have at least the start and end points."
+    assert not jnp.isnan(
+        new_points
+    ).any(), "No NaNs expected in computed resampled points."
+
+    # Check spacing is <= max_step
+    distances = jnp.sqrt(jnp.sum((new_points[1:] - new_points[:-1]) ** 2, axis=1))
+    assert (distances <= max_step + 1e-6).all()
+    # we don't expect spacing to be uniform here since at a corner, points may be much
+    # closer than along a straight

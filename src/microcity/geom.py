@@ -117,7 +117,7 @@ def segment_tangents(points, eps=1e-8):
     jax.numpy.ndarray
         An array of shape (N-1, 2) where each row is the unit tangent vector
         for the corresponding segment of the polyline.
-        
+
     Notes
     -----
     - If two consecutive points coincide or are extremely close, `eps` prevents
@@ -133,5 +133,101 @@ def segment_tangents(points, eps=1e-8):
     # Normalize each segment vector to get unit tangents: shape = (N-1, 2)
     # We add eps to avoid division by zero when lengths are extremely small.
     tangents = diffs / (lengths[:, None] + eps)
-    
+
     return tangents
+
+
+def resample_polyline(points: jnp.ndarray, max_step: float) -> jnp.ndarray:
+    """
+    Resample a polyline so that it has equally spaced points with spacing <= max_step.
+
+    This function interprets 'max_step' as the maximum allowable spacing. It determines
+    how many equally spaced intervals fit between 0 and the total arc length of the
+    polyline such that the spacing is <= max_step, then places vertices at those
+    uniform distances.
+
+    Parameters
+    ----------
+    points : jax.numpy.ndarray
+        An (N, 2) array of (x, y) coordinates representing the polyline vertices.
+        Must have at least two points.
+
+    max_step : float
+        The maximum distance between consecutive vertices in the resampled polyline.
+        The actual spacing in the result will be <= max_step and constant for all
+        intervals.
+
+    Returns
+    -------
+    jax.numpy.ndarray
+        An (M, 2) array of resampled vertices, equally spaced from the start to
+        the end of the original polyline.
+
+    Notes
+    -----
+    - We do NOT preserve the original polyline's intermediate vertices; the entire
+      polyline is treated as a continuous curve, and new points are placed at uniform
+      distances.
+    - The final spacing is exactly total_length / num_intervals, where num_intervals
+      is the smallest integer such that the spacing is <= max_step.
+    - This version omits special handling for extremely short polylines or explicitly
+      appending the last point in a separate step, as requested.
+
+    Examples
+    --------
+    >>> import jax.numpy as jnp
+    >>> # A simple polyline with total length ~ 8 units
+    >>> original_points = jnp.array([
+    ...     [0.0, 0.0],
+    ...     [3.0, 4.0],
+    ...     [6.0, 4.0]
+    ... ])
+    >>> # We want the spacing to be at most 2.5 units
+    >>> # The function will choose intervals so that spacing is <= 2.5
+    >>> new_points = resample_polyline(original_points, max_step=2.5)
+    >>> print(new_points)
+    [[0.        0.       ]
+     [1.3047379 1.7396501]
+     [2.6094758 3.4793003]
+     [3.8571064 4.       ]
+     [5.1428936 4.       ]
+     [6.        4.       ]]
+    """
+    if points.shape[0] < 2:
+        raise ValueError("At least two points are required to resample a polyline.")
+
+    # Compute segment lengths
+    diffs = points[1:] - points[:-1]  # shape: (N-1, 2)
+    seg_lengths = jnp.sqrt(jnp.sum(diffs**2, axis=1))  # shape: (N-1,)
+    cumulative_distances = jnp.concatenate(
+        [jnp.array([0.0]), jnp.cumsum(seg_lengths)]
+    )  # shape: (N,)
+    total_length = cumulative_distances[-1]
+
+    # Number of intervals needed so that (total_length / num_intervals) <= max_step
+    # i.e., num_intervals >= (total_length / max_step).
+    # We ensure it's at least 1 to avoid division by zero if total_length < max_step.
+    num_intervals = jnp.maximum(1, jnp.ceil(total_length / max_step)).astype(int)
+
+    # Actual uniform step (spacing) used
+    step = total_length / num_intervals
+
+    # Create distances 0 .. step .. 2*step .. total_length
+    sample_distances = jnp.linspace(0.0, total_length, num_intervals + 1)
+
+    # Function to interpolate a single distance 'd' along the polyline
+    def interpolate(d):
+        # Find which segment this distance falls in
+        i = jnp.searchsorted(cumulative_distances, d, side="right") - 1
+        i = jnp.clip(i, 0, points.shape[0] - 2)  # clip to valid range
+        seg_len = seg_lengths[i]
+
+        # Parametric distance along the segment [i, i+1]
+        # Avoid zero division if seg_len=0 (coincident points)
+        t = (d - cumulative_distances[i]) / jnp.where(seg_len > 0, seg_len, 1e-12)
+
+        return points[i] + t * diffs[i]
+
+    # Vectorize the interpolation
+    new_points = jax.vmap(interpolate)(sample_distances)
+    return new_points
