@@ -1,6 +1,5 @@
 import jax
 import jax.numpy as jnp
-from jax import grad, jit
 
 
 def segment_lengths(points: jax.Array):
@@ -10,6 +9,62 @@ def segment_lengths(points: jax.Array):
     diffs = points[1:] - points[:-1]
     seg_lengths = jnp.sqrt(jnp.sum(diffs**2, axis=1))
     return seg_lengths
+
+
+def vertex_length_parameters(points: jax.Array, normalize: bool = False):
+    """
+    Compute arc-length parameters for each vertex of a polyline.
+
+    This function calculates the cumulative distance at each vertex of a polyline
+    (including the first vertex at distance 0), using an external `segment_lengths`
+    function to determine the length of each consecutive pair of vertices.
+    The resulting distance values can optionally be normalized to lie in [0, 1] by
+    setting `normalize=True`.
+
+    Parameters
+    ----------
+    points : jax.Array
+        An (N, D) array representing the coordinates of the polyline vertices,
+        where N >= 2 and D >= 1. Typically, D = 2 for (x, y) coordinates.
+
+    normalize : bool, optional
+        Whether to normalize the distance parameters by the total length of
+        the polyline so that the last vertex is mapped to 1.0. Defaults to False.
+
+    Returns
+    -------
+    jax.Array
+        A one-dimensional array of length N containing the cumulative distances (or
+        normalized distances) at each vertex. The first element is always 0, and if
+        `normalize=True`, the last element is 1.
+
+    Notes
+    -----
+    - The function relies on `segment_lengths(points)`, which should return the
+      lengths of each segment between consecutive vertices.
+    - If the polyline is closed or has repeated points, distances for zero-length
+      segments would be 0.
+
+    Examples
+    --------
+    >>> import jax.numpy as jnp
+    >>> # Suppose we have points forming a line along the x-axis
+    >>> points = jnp.array([[0., 0.],
+    ...                     [3., 0.],
+    ...                     [6., 0.]])
+    >>> t = vertex_length_parameters(points)
+    >>> print(t)
+    [0. 3. 6.]
+    >>> t_norm = vertex_length_parameters(points, normalize=True)
+    >>> print(t_norm)
+    [0.  0.5 1. ]
+    """
+    t = jnp.r_[
+        0, jnp.cumulative_sum(segment_lengths(points), include_initial=False)
+    ]
+    if normalize:
+        t /= t[-1]
+    return t
 
 
 def curvature_radius(points, eps=1e-9):
@@ -140,6 +195,7 @@ def segment_tangents(points, eps=1e-8):
 def resample_polyline(points: jnp.ndarray, max_step: float) -> jnp.ndarray:
     """
     Resample a polyline so that it has equally spaced points with spacing <= max_step.
+    This function does not preserve the original vertices.
 
     This function interprets 'max_step' as the maximum allowable spacing. It determines
     how many equally spaced intervals fit between 0 and the total arc length of the

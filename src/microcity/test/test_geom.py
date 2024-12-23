@@ -4,7 +4,12 @@ import pytest
 import math
 import numpy as np
 
-from microcity.geom import curvature_radius, resample_polyline, segment_tangents
+from microcity.geom import (
+    curvature_radius,
+    resample_polyline,
+    segment_tangents,
+    vertex_length_parameters,
+)
 
 
 def test_curvature_radius_straight_line():
@@ -259,3 +264,76 @@ def test_resample_polyline_random():
     assert (distances <= max_step + 1e-6).all()
     # we don't expect spacing to be uniform here since at a corner, points may be much
     # closer than along a straight
+
+
+def test_vertex_length_parameters_line():
+    """
+    Test a simple horizontal line: (0,0) -> (3,0) -> (5,0).
+    """
+    points = jnp.array([[0.0, 0.0], [3.0, 0.0], [5.0, 0.0]])
+    # Segment lengths: [3.0, 2.0]
+    # Cumulative distances: [0.0, 3.0, 5.0]
+    t = vertex_length_parameters(points)
+    expected = jnp.array([0.0, 3.0, 5.0])
+    np.testing.assert_allclose(t, expected, rtol=1e-7, atol=1e-7)
+
+
+def test_vertex_length_parameters_line_normalized():
+    """
+    Same line as above, but check normalization to [0, 1].
+    """
+    points = jnp.array([[0.0, 0.0], [3.0, 0.0], [5.0, 0.0]])
+    t_norm = vertex_length_parameters(points, normalize=True)
+    # Expect: [0.0, 3.0/5.0, 5.0/5.0] = [0.0, 0.6, 1.0]
+    expected = jnp.array([0.0, 0.6, 1.0])
+    np.testing.assert_allclose(t_norm, expected, rtol=1e-7, atol=1e-7)
+
+
+def test_vertex_length_parameters_diagonal():
+    """
+    Test a diagonal line from (0,0) to (2,2).
+    The total length is 2*sqrt(2) ~ 2.8284.
+    """
+    points = jnp.array([[0.0, 0.0], [2.0, 2.0]])
+    t = vertex_length_parameters(points)
+    # Only two vertices => segment length is 2*sqrt(2)
+    expected_length = np.sqrt(2**2 + 2**2)  # 2.8284...
+    # So we expect [0, 2.8284...]
+    np.testing.assert_allclose(t[0], 0.0, rtol=1e-7, atol=1e-7)
+    np.testing.assert_allclose(t[1], expected_length, rtol=1e-7, atol=1e-7)
+
+
+def test_vertex_length_parameters_repeated_points():
+    """
+    Test behavior when the polyline has repeated points (zero-length segment).
+    """
+    points = jnp.array(
+        [
+            [0.0, 0.0],
+            [1.0, 1.0],
+            [1.0, 1.0],  # repeated
+            [2.0, 2.0],
+        ]
+    )
+    # Segment lengths:
+    #   (0,0)->(1,1) = sqrt(2)
+    #   (1,1)->(1,1) = 0
+    #   (1,1)->(2,2) = sqrt(2)
+    # cumulative: [0, sqrt(2), sqrt(2), 2*sqrt(2)]
+    t = vertex_length_parameters(points)
+    expected = jnp.array([0.0, np.sqrt(2), np.sqrt(2), 2 * np.sqrt(2)])
+    np.testing.assert_allclose(t, expected, rtol=1e-7, atol=1e-7)
+
+
+def test_vertex_length_parameters_normalized_random():
+    """
+    Random test for a polyline of length N, ensures the last value is exactly 1 when normalized.
+    """
+    key = jax.random.PRNGKey(42)
+    # Create 5 random points in a 10x10 square
+    random_points = 10.0 * jax.random.uniform(key, shape=(5, 2))
+
+    t_norm = vertex_length_parameters(random_points, normalize=True)
+    # Check that the first value is 0.0 and the last is 1.0
+    np.testing.assert_allclose(t_norm[0], 0.0, rtol=1e-7, atol=1e-7)
+    np.testing.assert_allclose(t_norm[-1], 1.0, rtol=1e-7, atol=1e-7)
